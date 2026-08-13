@@ -184,7 +184,8 @@ function buildAnalytics() {
       ? ((v / (v + m)) * d.rataKeseluruhanRaw) + ((m / (v + m)) * C)
       : d.rataKeseluruhanRaw;
     d.skorTertimbang = +d.skorTertimbangRaw.toFixed(2);
-    d.dataTerbatas = v < m;
+    // Penanda data terbatas mengikuti ambang tetap dashboard: < 10 responden.
+    d.dataTerbatas = v < 10;
 
     const counts = [1, 2, 3, 4, 5].map((val) => d.distribusi[val] || 0);
     d.skorNetralRaw = wilsonStarScore(counts, WILSON_Z);
