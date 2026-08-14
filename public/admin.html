@@ -124,6 +124,20 @@
   .saran-item { padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
   .saran-meta { font-size: 11px; color: var(--ink-500); margin-bottom: 4px; }
   .close-detail { float: right; }
+  .detail-respondent-section { margin-top: 20px; }
+  .detail-respondent-summary {
+    display: flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin: 10px 0 8px; font-size: 12px; color: var(--ink-500);
+  }
+  .detail-respondent-table { min-width: 780px !important; }
+  .detail-respondent-table th, .detail-respondent-table td { vertical-align: top; }
+  .detail-respondent-table td:nth-child(1) { width: 54px; text-align: center; font-weight: 700; color: var(--navy-900); }
+  .detail-respondent-table td:nth-child(5) { white-space: nowrap; }
+  .detail-pagination {
+    display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px;
+  }
+  .detail-pagination .page-info { min-width: 130px; text-align: center; font-size: 12px; color: var(--ink-500); }
+  .detail-pagination button:disabled { opacity: .45; cursor: not-allowed; }
 
   @media (max-width: 900px) {
     .kpi-grid { grid-template-columns: repeat(2, 1fr); }
@@ -343,7 +357,34 @@
               <div class="chart-wrap short"><canvas id="chartDetailRadar"></canvas></div>
             </div>
           </div>
-          <h3 style="margin-top:10px;">Saran &amp; Kritik Mahasiswa</h3>
+          <div class="detail-respondent-section">
+            <h3>Daftar Responden yang Menilai</h3>
+            <div class="sub">
+              Diurutkan dari responden paling awal mengisi sampai yang paling terakhir.
+              Ditampilkan 10 responden per halaman. Karena survei tidak menyimpan nama mahasiswa, responden ditampilkan secara anonim berdasarkan urutan pengisian.
+            </div>
+            <div class="detail-respondent-summary">
+              <span id="detailRespondentSummary"></span>
+              <span id="detailRespondentRange"></span>
+            </div>
+            <div class="table-scroll">
+              <table class="detail-respondent-table">
+                <thead>
+                  <tr>
+                    <th>No.</th><th>Waktu Isi</th><th>Prodi</th><th>Kelas</th><th>Rata-rata Nilai</th><th>Saran / Kritik</th>
+                  </tr>
+                </thead>
+                <tbody id="detailRespondentBody"></tbody>
+              </table>
+            </div>
+            <div class="detail-pagination">
+              <button class="btn btn-ghost btn-small" id="btnDetailRespondentPrev">&larr; Sebelumnya</button>
+              <span class="page-info" id="detailRespondentPageInfo"></span>
+              <button class="btn btn-ghost btn-small" id="btnDetailRespondentNext">Berikutnya &rarr;</button>
+            </div>
+          </div>
+
+          <h3 style="margin-top:20px;">Saran &amp; Kritik Mahasiswa</h3>
           <div id="detailSaran"></div>
         </div>
       </div>
@@ -455,6 +496,10 @@ document.getElementById('btnLogin').onclick = login;
 document.getElementById('pw').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
 
 let RESPONSES = [];
+let RESPONSES_LOADED = false;
+let CURRENT_DETAIL_DOSEN = '';
+let DETAIL_RESPONDENT_PAGE = 1;
+const DETAIL_RESPONDENT_PAGE_SIZE = 10;
 
 async function login() {
   const pw = document.getElementById('pw').value;
@@ -547,8 +592,10 @@ document.getElementById('btnToggleSurvey').onclick = toggleSurveyStatus;
 
 async function loadResponses() {
   const res = await fetch('/api/admin/responses?token=' + encodeURIComponent(TOKEN));
+  RESPONSES_LOADED = res.ok;
   RESPONSES = res.ok ? await res.json() : [];
   renderRespondenTable();
+  if (CURRENT_DETAIL_DOSEN) renderDetailRespondents();
 }
 
 function renderRespondenTable() {
@@ -756,6 +803,8 @@ function renderAll() {
   renderChartKelas();
   renderTable(dosenList);
   document.getElementById('detailPanel').classList.remove('open');
+  CURRENT_DETAIL_DOSEN = '';
+  DETAIL_RESPONDENT_PAGE = 1;
 }
 
 function renderKPI(dosenList) {
@@ -939,9 +988,98 @@ function renderTable(dosenList) {
   });
 }
 
+
+function getRespondentsForDosen(dosenName) {
+  return RESPONSES.flatMap((r) => {
+    const p = Array.isArray(r.penilaian) ? r.penilaian.find((x) => x.dosen === dosenName) : null;
+    if (!p) return [];
+
+    const answers = Array.isArray(p.jawaban)
+      ? p.jawaban.map(Number).filter((v) => Number.isFinite(v))
+      : [];
+    const rataNilai = answers.length
+      ? +(answers.reduce((a, b) => a + b, 0) / answers.length).toFixed(2)
+      : 0;
+
+    return [{
+      id: r.id || '',
+      waktu: r.waktu || '',
+      prodi: r.prodi || '',
+      kelas: r.kelas || '',
+      rataNilai,
+      saran: (p.saran || '').trim()
+    }];
+  }).sort((a, b) => {
+    const ta = new Date(a.waktu).getTime();
+    const tb = new Date(b.waktu).getTime();
+    const safeA = Number.isFinite(ta) ? ta : 0;
+    const safeB = Number.isFinite(tb) ? tb : 0;
+    if (safeA !== safeB) return safeA - safeB;
+    return String(a.id).localeCompare(String(b.id));
+  });
+}
+
+function renderDetailRespondents() {
+  const body = document.getElementById('detailRespondentBody');
+  const summary = document.getElementById('detailRespondentSummary');
+  const range = document.getElementById('detailRespondentRange');
+  const pageInfo = document.getElementById('detailRespondentPageInfo');
+  const prevBtn = document.getElementById('btnDetailRespondentPrev');
+  const nextBtn = document.getElementById('btnDetailRespondentNext');
+
+  if (!CURRENT_DETAIL_DOSEN) {
+    body.innerHTML = '';
+    summary.textContent = '';
+    range.textContent = '';
+    pageInfo.textContent = '';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    return;
+  }
+
+  if (!RESPONSES_LOADED) {
+    body.innerHTML = '<tr><td colspan="6" class="muted" style="padding:16px 12px;">Memuat daftar responden...</td></tr>';
+    summary.textContent = 'Memuat data responden...';
+    range.textContent = '';
+    pageInfo.textContent = '';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    return;
+  }
+
+  const list = getRespondentsForDosen(CURRENT_DETAIL_DOSEN);
+  const total = list.length;
+  const totalPages = Math.max(1, Math.ceil(total / DETAIL_RESPONDENT_PAGE_SIZE));
+  DETAIL_RESPONDENT_PAGE = Math.min(Math.max(1, DETAIL_RESPONDENT_PAGE), totalPages);
+
+  const start = (DETAIL_RESPONDENT_PAGE - 1) * DETAIL_RESPONDENT_PAGE_SIZE;
+  const pageItems = list.slice(start, start + DETAIL_RESPONDENT_PAGE_SIZE);
+  const end = Math.min(start + pageItems.length, total);
+
+  summary.textContent = `${total} responden menilai dosen ini`;
+  range.textContent = total ? `Menampilkan ${start + 1}–${end} dari ${total}` : 'Belum ada responden';
+  pageInfo.textContent = `Halaman ${DETAIL_RESPONDENT_PAGE} dari ${totalPages}`;
+  prevBtn.disabled = DETAIL_RESPONDENT_PAGE <= 1;
+  nextBtn.disabled = DETAIL_RESPONDENT_PAGE >= totalPages || total === 0;
+
+  body.innerHTML = pageItems.length ? pageItems.map((r, idx) => `
+    <tr>
+      <td>${start + idx + 1}</td>
+      <td>${r.waktu ? new Date(r.waktu).toLocaleString('id-ID') : '-'}</td>
+      <td>${escapeHtml(r.prodi || '-')}</td>
+      <td>${escapeHtml(r.kelas || '-')}</td>
+      <td class="score">${Number(r.rataNilai || 0).toFixed(2)}</td>
+      <td>${r.saran ? escapeHtml(r.saran) : '<span class="muted">Tidak ada saran/kritik</span>'}</td>
+    </tr>
+  `).join('') : '<tr><td colspan="6" class="muted" style="padding:16px 12px;">Belum ada responden untuk dosen ini.</td></tr>';
+}
+
 function openDetail(dosenName) {
   const d = ANALYTICS.dosen.find(x => x.dosen === dosenName);
   if (!d) return;
+
+  CURRENT_DETAIL_DOSEN = dosenName;
+  DETAIL_RESPONDENT_PAGE = 1;
 
   document.getElementById('detailPanel').classList.add('open');
   document.getElementById('detailName').textContent = d.dosen;
@@ -981,6 +1119,8 @@ function openDetail(dosenName) {
     }
   });
 
+  renderDetailRespondents();
+
   const saranEl = document.getElementById('detailSaran');
   saranEl.innerHTML = d.saranList.length
     ? d.saranList.map(s => `
@@ -993,7 +1133,26 @@ function openDetail(dosenName) {
 
   document.getElementById('detailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-document.getElementById('btnCloseDetail').onclick = () => document.getElementById('detailPanel').classList.remove('open');
+document.getElementById('btnCloseDetail').onclick = () => {
+  document.getElementById('detailPanel').classList.remove('open');
+  CURRENT_DETAIL_DOSEN = '';
+  DETAIL_RESPONDENT_PAGE = 1;
+};
+
+document.getElementById('btnDetailRespondentPrev').onclick = () => {
+  if (DETAIL_RESPONDENT_PAGE <= 1) return;
+  DETAIL_RESPONDENT_PAGE -= 1;
+  renderDetailRespondents();
+};
+
+document.getElementById('btnDetailRespondentNext').onclick = () => {
+  if (!CURRENT_DETAIL_DOSEN) return;
+  const total = getRespondentsForDosen(CURRENT_DETAIL_DOSEN).length;
+  const totalPages = Math.max(1, Math.ceil(total / DETAIL_RESPONDENT_PAGE_SIZE));
+  if (DETAIL_RESPONDENT_PAGE >= totalPages) return;
+  DETAIL_RESPONDENT_PAGE += 1;
+  renderDetailRespondents();
+};
 
 document.getElementById('btnExportXlsx').onclick = () => {
   window.location.href = '/api/admin/export.xlsx?token=' + encodeURIComponent(TOKEN);
